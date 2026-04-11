@@ -1,12 +1,14 @@
-# Java compiled output
+
 bin/
 *.class
 
-# VS Code workspace settings
-.vscode/
 
-# OS junk
-.DS_Store
-*.code-workspace
+src/lib/
+*.jar
+*.dll
 
+db/
 config.properties
+
+.DS_Store
+Thumbs.d
