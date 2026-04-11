@@ -1,0 +1,21 @@
+# compiled files
+bin/
+*.class
+*.jar
+*.dll
+
+# configs
+config.properties
+*.env
+
+# database
+db/seed.sql
+db/*.db
+db/*.sqlite
+
+# assets
+assets/
+
+# OS junk
+.DS_Store
+Thumbs.db

@@ -1,0 +1,12 @@
+package enums;
+
+public enum PrimaryCategory {
+  SINGLE_USE_PLASTIC,
+  FOOD_BEVERAGE,
+  TOBACCO,
+  WEAPON,
+  ALCOHOL,
+  PROHIBITED_SUBSTANCE,
+  CANTEEN_PRODUCT,
+  ALLOWED
+}
