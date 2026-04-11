@@ -9,9 +9,7 @@ config.properties
 *.env
 
 # database
-db/seed.sql
-db/*.db
-db/*.sqlite
+db/
 
 # assets
 assets/
