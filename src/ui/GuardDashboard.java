@@ -2,7 +2,7 @@ package ui;
 
 // Guard-facing security terminal.
 // Handles student lookup, manual/CV item evaluation, decision logging, and held items queue.
-
+// Quite convoluted and monolithic. Will clean it once UI is finalized
 import engine.CVEngine;
 import engine.CVMatchResult;
 import engine.DecisionEngine;
