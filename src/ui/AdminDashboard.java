@@ -1,7 +1,12 @@
 package ui;
 
 // Admin terminal — Decision Log, Student Registry, Overrides, Analytics.
-// Convoluted and monolithic as well. Will modularize everything after
+// Convoluted and monolithic as well. Will modularize everything after.
+
+// TODO:
+// Sort Filter Logs: Day, Week, Month, Year
+// Sort Filter Analytics: Day, Week, Month, Year
+// A simple Predictive Engine for analytics
 
 import engine.ThreatLevel;
 import enums.*;
@@ -258,7 +263,9 @@ public class AdminDashboard extends JPanel {
                     studentId,
                     log.get("decision"),
                     log.get("threat_level"),
-                    log.get("risk_score"),
+                    // Display something like "AUTO" instead of -1 
+                    // for items auto blocked by policy gate
+                    (int) log.get("risk_score") == -1 ? "AUTO" : log.get("risk_score"),
                     ((LocalDateTime) log.get("evaluated_at")).format(fmt)
                 });
             }
