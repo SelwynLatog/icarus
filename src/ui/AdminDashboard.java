@@ -9,6 +9,9 @@ package ui;
 // A simple Predictive Engine for analytics
 
 import engine.ThreatLevel;
+import engine.ItemAnalytics;
+import engine.ItemAnalytics.AnalyticsSnapshot;
+import engine.ItemAnalytics.TrendResult;
 import enums.*;
 import model.Item;
 import model.Student;
@@ -61,6 +64,7 @@ public class AdminDashboard extends JPanel {
 
     // Analytics panel refs
     private JPanel analyticsPanel;
+    private int currentAnalyticsRange = ItemAnalytics.RANGE_ALL;
 
     // Selected log entry for override
     private int selectedLogId   = -1;
@@ -638,99 +642,98 @@ public class AdminDashboard extends JPanel {
 
     // ANALYTICS TAB
     private JPanel buildAnalyticsTab() {
+        JPanel wrapper = new JPanel(new BorderLayout(0, 4));
+        wrapper.setBackground(IcarusTheme.BG_FRAME);
+        wrapper.setBorder(BorderFactory.createEmptyBorder(6, 6, 6, 6));
+
+        // Time filter strip
+        JPanel filterStrip = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
+        filterStrip.setOpaque(false);
+
+        String[] labels  = { "TODAY", "WEEK", "MONTH", "YEAR", "ALL" };
+        int[]    ranges  = {
+            ItemAnalytics.RANGE_DAY,
+            ItemAnalytics.RANGE_WEEK,
+            ItemAnalytics.RANGE_MONTH,
+            ItemAnalytics.RANGE_YEAR,
+            ItemAnalytics.RANGE_ALL
+        };
+
+        for (int i = 0; i < labels.length; i++) {
+            final int range = ranges[i];
+            JButton btn = IcarusTheme.makeButton(labels[i]);
+            btn.setPreferredSize(new Dimension(90, 24));
+            btn.addActionListener(e -> {
+                currentAnalyticsRange = range;
+                refreshAnalytics();
+            });
+            filterStrip.add(btn);
+        }
+
         analyticsPanel = new JPanel(new GridBagLayout());
         analyticsPanel.setBackground(IcarusTheme.BG_FRAME);
-        analyticsPanel.setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8));
-        refreshAnalytics();
-        return analyticsPanel;
+
+        wrapper.add(filterStrip,    BorderLayout.NORTH);
+        wrapper.add(analyticsPanel, BorderLayout.CENTER);
+
+        return wrapper;
     }
 
-    private void refreshAnalytics() {
+   private void refreshAnalytics() {
         analyticsPanel.removeAll();
 
         try {
-            List<Map<String, Object>> logs     = decisionLogDAO.getAll();
-            List<Item>                items    = itemDAO.getAllItems();
-            List<Student>             students = studentDAO.getAllStudents();
+            List<Map<String, Object>> allLogs     = decisionLogDAO.getAll();
+            List<Item>                allItems    = itemDAO.getAllItems();
+            List<Student>             allStudents = studentDAO.getAllStudents();
 
-            // Compute counts
-            int totalItems   = items.size();
-            int totalHeld    = 0, totalReleased = 0;
-            int totalAllow   = 0, totalDisallow = 0, totalConditional = 0;
-            int criticalCount = 0, highCount = 0, mediumCount = 0, lowCount = 0;
-            Map<String, Integer> categoryCount = new java.util.LinkedHashMap<>();
-
-            for (Item item : items) {
-                if (item.getStatus() == ItemStatus.HELD)     totalHeld++;
-                if (item.getStatus() == ItemStatus.RELEASED) totalReleased++;
-                String cat = item.getPrimaryCategory().name();
-                categoryCount.merge(cat, 1, Integer::sum);
-            }
-
-            for (Map<String, Object> log : logs) {
-                String dec = (String) log.get("decision");
-                String thr = (String) log.get("threat_level");
-                if ("ALLOW".equals(dec))       totalAllow++;
-                if ("DISALLOW".equals(dec))    totalDisallow++;
-                if ("CONDITIONAL".equals(dec)) totalConditional++;
-                if ("CRITICAL".equals(thr)) criticalCount++;
-                if ("HIGH".equals(thr))     highCount++;
-                if ("MEDIUM".equals(thr))   mediumCount++;
-                if ("LOW".equals(thr))      lowCount++;
-            }
-
-            // Top violators
-            Map<String, Integer> violatorMap = new java.util.LinkedHashMap<>();
-            for (Student s : students) {
-                try {
-                    int v = itemDAO.findItemsByStudentId(s.getStudentId()).size();
-                    if (v > 0) violatorMap.put(s.getFullName() + " (" + s.getStudentId() + ")", v);
-                } catch (Exception ignored) {}
-            }
+            AnalyticsSnapshot snap = ItemAnalytics.compute(
+                currentAnalyticsRange, allLogs, allItems, allStudents, itemDAO
+            );
 
             GridBagConstraints c = new GridBagConstraints();
-            c.fill    = GridBagConstraints.BOTH;
-            c.insets  = new Insets(4, 4, 4, 4);
-            c.weighty = 1.0;
+            c.fill   = GridBagConstraints.BOTH;
+            c.insets = new Insets(4, 4, 4, 4);
 
-            // Row 0 — stat cards
-            c.gridy = 0; c.weighty = 0.15;
+            // Row 0 - stat cards
+            c.gridy = 0; c.weighty = 0.12;
+            c.gridwidth = 1;
 
             c.gridx = 0; c.weightx = 0.25;
-            analyticsPanel.add(buildStatCard("TOTAL ITEMS",   String.valueOf(totalItems),   IcarusTheme.TEXT_PRIMARY), c);
+            analyticsPanel.add(buildStatCard("TOTAL ITEMS",  String.valueOf(snap.totalItems),   IcarusTheme.TEXT_PRIMARY), c);
             c.gridx = 1;
-            analyticsPanel.add(buildStatCard("HELD",          String.valueOf(totalHeld),    IcarusTheme.STATUS_DISALLOW), c);
+            analyticsPanel.add(buildStatCard("HELD",         String.valueOf(snap.totalHeld),    IcarusTheme.STATUS_DISALLOW), c);
             c.gridx = 2;
-            analyticsPanel.add(buildStatCard("RELEASED",      String.valueOf(totalReleased),IcarusTheme.STATUS_ALLOW), c);
+            analyticsPanel.add(buildStatCard("RELEASED",     String.valueOf(snap.totalReleased),IcarusTheme.STATUS_ALLOW), c);
             c.gridx = 3;
-            analyticsPanel.add(buildStatCard("DISALLOWED",    String.valueOf(totalDisallow),IcarusTheme.STATUS_DISALLOW), c);
+            analyticsPanel.add(buildStatCard("DISALLOWED",   String.valueOf(snap.totalDisallow),IcarusTheme.STATUS_DISALLOW), c);
 
-            // Row 1 — category bar chart + threat breakdown
-            c.gridy = 1; c.weighty = 0.5;
+            // Row 1 - category chart + threat chart
+            c.gridy = 1; c.weighty = 0.35;
 
-            c.gridx = 0; c.gridwidth = 2; c.weightx = 0.6;
-            analyticsPanel.add(buildBarChart("ITEMS BY CATEGORY", categoryCount, IcarusTheme.ACCENT), c);
+            c.gridx = 0; c.gridwidth = 2; c.weightx = 0.55;
+            analyticsPanel.add(buildBarChart("ITEMS BY CATEGORY", snap.categoryCount, null), c);
 
-            c.gridx = 2; c.gridwidth = 2; c.weightx = 0.4;
-            Map<String, Integer> threatMap = new java.util.LinkedHashMap<>();
-            threatMap.put("CRITICAL", criticalCount);
-            threatMap.put("HIGH",     highCount);
-            threatMap.put("MEDIUM",   mediumCount);
-            threatMap.put("LOW",      lowCount);
-            analyticsPanel.add(buildBarChart("THREAT BREAKDOWN", threatMap, IcarusTheme.STATUS_DISALLOW), c);
+            c.gridx = 2; c.gridwidth = 2; c.weightx = 0.45;
+            analyticsPanel.add(buildThreatChart(snap.threatMap), c);
 
-            // Row 2 — decision breakdown + top violators
-            c.gridy = 2; c.weighty = 0.35;
+            // Row 2 - decision chart + violators table
+            c.gridy = 2; c.weighty = 0.28;
 
             c.gridx = 0; c.gridwidth = 2; c.weightx = 0.4;
-            Map<String, Integer> decisionMap = new java.util.LinkedHashMap<>();
-            decisionMap.put("ALLOW",       totalAllow);
-            decisionMap.put("CONDITIONAL", totalConditional);
-            decisionMap.put("DISALLOW",    totalDisallow);
-            analyticsPanel.add(buildBarChart("DECISIONS", decisionMap, IcarusTheme.STATUS_CONDITIONAL), c);
+            analyticsPanel.add(buildBarChart("DECISIONS", snap.decisionMap, null), c);
 
             c.gridx = 2; c.gridwidth = 2; c.weightx = 0.6;
-            analyticsPanel.add(buildViolatorsTable(violatorMap), c);
+            analyticsPanel.add(buildViolatorsTable(snap.violatorMap), c);
+
+            // Row 3 - trends + prediction
+            c.gridy = 3; c.weighty = 0.25;
+
+            c.gridx = 0; c.gridwidth = 2; c.weightx = 0.5;
+            analyticsPanel.add(buildTrendsPanel(snap.categoryTrends, snap.peakDay, snap.peakHour), c);
+
+            c.gridx = 2; c.gridwidth = 2; c.weightx = 0.5;
+            analyticsPanel.add(buildPredictionPanel(snap.prediction), c);
 
         } catch (Exception e) {
             JLabel err = IcarusTheme.makeDimLabel("Analytics load error: " + e.getMessage());
@@ -757,7 +760,7 @@ public class AdminDashboard extends JPanel {
     }
 
     // Java2D horizontal bar chart
-    private JPanel buildBarChart(String title, Map<String, Integer> data, Color barColor) {
+   private JPanel buildBarChart(String title, Map<String, Integer> data, Color overrideColor) {
         JPanel outer = IcarusTheme.makePanelWithHeader(title);
 
         JPanel chart = new JPanel() {
@@ -786,20 +789,19 @@ public class AdminDashboard extends JPanel {
                     String key = entry.getKey();
                     int    val = entry.getValue();
 
-                    // Label
+                    // Per-key color if no override
+                    Color barColor = overrideColor != null ? overrideColor : categoryColor(key);
+
                     g2.setColor(IcarusTheme.TEXT_DIM);
                     g2.drawString(key, 8, y + barH / 2 + fm.getAscent() / 2);
 
-                    // Bar
                     int barW = maxVal == 0 ? 0 : (int) ((double) val / maxVal * (w - labelW - 40));
                     g2.setColor(barColor);
                     g2.fillRect(labelW, y, barW, barH);
 
-                    // Border
                     g2.setColor(IcarusTheme.BORDER);
                     g2.drawRect(labelW, y, w - labelW - 40, barH);
 
-                    // Value
                     g2.setColor(IcarusTheme.TEXT_PRIMARY);
                     g2.drawString(String.valueOf(val), labelW + barW + 4, y + barH / 2 + fm.getAscent() / 2);
 
@@ -809,6 +811,117 @@ public class AdminDashboard extends JPanel {
         };
         chart.setBackground(IcarusTheme.BG_PANEL);
         outer.add(chart, BorderLayout.CENTER);
+        return outer;
+    }
+
+    // Per-category and per-decision color coding
+    private Color categoryColor(String key) {
+        return switch (key) {
+            case "WEAPON",
+                "PROHIBITED_SUBSTANCE" -> IcarusTheme.STATUS_DISALLOW;
+            case "TOBACCO",
+                "ALCOHOL"              -> new Color(0x8A5A08);
+            case "SINGLE_USE_PLASTIC"   -> new Color(0x4A6A10);
+            case "CANTEEN_PRODUCT",
+                "ALLOWED"              -> IcarusTheme.STATUS_ALLOW;
+            case "CRITICAL"             -> IcarusTheme.STATUS_DISALLOW;
+            case "HIGH"                 -> new Color(0xA03010);
+            case "MEDIUM"               -> new Color(0x8A5A08);
+            case "LOW"                  -> new Color(0x6A6A10);
+            case "DISALLOW"             -> IcarusTheme.STATUS_DISALLOW;
+            case "CONDITIONAL"          -> new Color(0x8A5A08);
+            case "ALLOW"                -> IcarusTheme.STATUS_ALLOW;
+            default                     -> IcarusTheme.ACCENT;
+        };
+    }
+
+    private JPanel buildThreatChart(Map<String, Integer> threatMap) {
+            return buildBarChart("THREAT BREAKDOWN", threatMap, null);
+        }
+
+        private JPanel buildTrendsPanel(List<TrendResult> trends, String peakDay, String peakHour) {
+        JPanel outer = IcarusTheme.makePanelWithHeader("CATEGORY TRENDS");
+
+        JPanel inner = new JPanel();
+        inner.setLayout(new BoxLayout(inner, BoxLayout.Y_AXIS));
+        inner.setBackground(IcarusTheme.BG_PANEL);
+        inner.setBorder(BorderFactory.createEmptyBorder(6, 8, 6, 8));
+
+        // Peak timing row
+        JLabel peakLbl = IcarusTheme.makeDimLabel(
+            "PEAK: " + peakDay + " at " + peakHour);
+        peakLbl.setAlignmentX(Component.LEFT_ALIGNMENT);
+        inner.add(peakLbl);
+        inner.add(Box.createVerticalStrut(6));
+
+        JSeparator sep = new JSeparator();
+        sep.setForeground(IcarusTheme.BORDER);
+        sep.setMaximumSize(new Dimension(Integer.MAX_VALUE, 1));
+        inner.add(sep);
+        inner.add(Box.createVerticalStrut(4));
+
+        if (trends.isEmpty()) {
+            inner.add(IcarusTheme.makeDimLabel("No trend data available."));
+        } else {
+            for (TrendResult t : trends) {
+                String arrow = switch (t.trend) {
+                    case UP     -> "[+]";
+                    case DOWN   -> "[-]";
+                    case NEW    -> "[N]";
+                    case STABLE -> "[=]";
+                };
+                Color arrowColor = switch (t.trend) {
+                    case UP     -> IcarusTheme.STATUS_DISALLOW;
+                    case DOWN   -> IcarusTheme.STATUS_ALLOW;
+                    case NEW    -> new Color(0x8A5A08);
+                    case STABLE -> IcarusTheme.TEXT_DIM;
+                };
+                String pct = t.previousCount == 0
+                    ? "new"
+                    : String.format("%+.0f%%", t.changePercent);
+
+                JLabel row = new JLabel(String.format(
+                    "%s %-22s %3d  (%s)",
+                    arrow, t.category, t.currentCount, pct));
+                row.setFont(IcarusTheme.FONT_MONO_SMALL);
+                row.setForeground(arrowColor);
+                row.setAlignmentX(Component.LEFT_ALIGNMENT);
+                inner.add(row);
+                inner.add(Box.createVerticalStrut(2));
+            }
+        }
+
+        JScrollPane scroll = new JScrollPane(inner);
+        scroll.setBorder(null);
+        scroll.getViewport().setBackground(IcarusTheme.BG_PANEL);
+        outer.add(scroll, BorderLayout.CENTER);
+        return outer;
+    }
+
+    private JPanel buildPredictionPanel(String prediction) {
+        JPanel outer = IcarusTheme.makePanelWithHeader("PREDICTIVE ANALYSIS");
+
+        JPanel inner = new JPanel();
+        inner.setLayout(new BoxLayout(inner, BoxLayout.Y_AXIS));
+        inner.setBackground(IcarusTheme.BG_PANEL);
+        inner.setBorder(BorderFactory.createEmptyBorder(6, 8, 6, 8));
+
+        String[] lines = prediction.split("\n");
+        for (String line : lines) {
+            JLabel lbl = new JLabel("<html>" + line + "</html>");
+            lbl.setFont(IcarusTheme.FONT_MONO_SMALL);
+            lbl.setForeground(line.contains("CRITICAL") || line.contains("up")
+                ? IcarusTheme.STATUS_DISALLOW
+                : IcarusTheme.TEXT_PRIMARY);
+            lbl.setAlignmentX(Component.LEFT_ALIGNMENT);
+            inner.add(lbl);
+            inner.add(Box.createVerticalStrut(4));
+        }
+
+        JScrollPane scroll = new JScrollPane(inner);
+        scroll.setBorder(null);
+        scroll.getViewport().setBackground(IcarusTheme.BG_PANEL);
+        outer.add(scroll, BorderLayout.CENTER);
         return outer;
     }
 

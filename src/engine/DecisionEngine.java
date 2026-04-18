@@ -100,7 +100,7 @@ public class DecisionEngine {
             }
             default -> {
                 decision  = Decision.CONDITIONAL;
-                reason    = "CV scan inconclusive — no confident match found.";
+                reason    = "CV scan inconclusive - no confident match found.";
                 actionRec = "Hold item. Request manual admin verification.";
             }
         }
@@ -125,9 +125,9 @@ public class DecisionEngine {
 
     private static String generatePlasticReason(Decision decision, int score) {
         return switch (decision) {
-            case ALLOW       -> String.format("Within acceptable risk parameters (score: %d <= %d)", score, ALLOW_THRESHOLD);
+            case ALLOW       -> String.format("Within acceptable risk parameters (score: %d - %d)", score, ALLOW_THRESHOLD);
             case CONDITIONAL -> String.format("Moderate policy concern (score: %d)", score);
-            case DISALLOW    -> String.format("Exceeds plastic policy threshold (score: %d >= %d)", score, CONDITIONAL_THRESHOLD + 1);
+            case DISALLOW    -> String.format("Exceeds plastic policy threshold (score: %d - %d)", score, CONDITIONAL_THRESHOLD + 1);
         };
     }
 }
