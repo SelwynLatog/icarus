@@ -14,6 +14,10 @@ import javax.swing.*;
 public class Main {
 
     public static void main(String[] args) {
+
+        // Suppress libpng iCCP profile warnings from ImageIO
+        java.util.logging.Logger.getLogger("javax.imageio").setLevel(java.util.logging.Level.OFF);
+        
         // Load OpenCV native lib before anything else
         CVEngine.loadLibrary();
 

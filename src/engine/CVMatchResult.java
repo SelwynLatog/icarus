@@ -1,5 +1,8 @@
 package engine;
 
+import java.util.List;
+import java.util.ArrayList;
+
 // Mutable during CVEngine scan loop, frozen once returned.
 public class CVMatchResult {
 
@@ -7,22 +10,29 @@ public class CVMatchResult {
     private float  confidence;
     private String matchLabel; // APPROVED | REJECTED | NO_MATCH
 
+    // ORB keypoints of the best matching reference image — (x, y, size)
+    private List<float[]> keypoints = new ArrayList<>();
+
     public CVMatchResult(String productName, float confidence, String matchLabel) {
         this.productName = productName;
         this.confidence  = confidence;
         this.matchLabel  = matchLabel;
     }
 
-    // Called by CVEngine during directory scan to update the best result so far.
     void update(String productName, float confidence, String matchLabel) {
         this.productName = productName;
         this.confidence  = confidence;
         this.matchLabel  = matchLabel;
     }
 
-    public String getProductName() { return productName; }
-    public float  getConfidence()  { return confidence;  }
-    public String getMatchLabel()  { return matchLabel;  }
+    void setKeypoints(List<float[]> keypoints) {
+        this.keypoints = keypoints != null ? keypoints : new ArrayList<>();
+    }
+
+    public String     getProductName() { return productName; }
+    public float      getConfidence()  { return confidence;  }
+    public String     getMatchLabel()  { return matchLabel;  }
+    public List<float[]> getKeypoints() { return keypoints; }
 
     @Override
     public String toString() {
