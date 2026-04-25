@@ -6,6 +6,7 @@ package ui;
 
 import engine.CVEngine;
 import engine.CVMatchResult;
+import engine.CVSocketClient;
 import engine.DecisionEngine;
 import engine.DecisionResult;
 import enums.*;
@@ -87,7 +88,7 @@ public class GuardDashboard extends JPanel {
     private DefaultTableModel queueModel;
     private JTable queueTable;
 
-    // CV scan state — tracks the current scan in progress and its visual state
+    // CV scan state - tracks the current scan in progress and its visual state
     private JLabel lblCVResult;
     private JLabel lblCVConfidence;
     private String lastScannedImagePath;
@@ -96,11 +97,19 @@ public class GuardDashboard extends JPanel {
     private javax.swing.Timer cvPulseTimer;
     private float cvPulsePhase = 0f;
 
-    // CV visual rendering state — shared between the painter and the scan worker
+    // CV visual rendering state - shared between the painter and the scan worker
     private final List<String> cvLog = new ArrayList<>();
     private BufferedImage cvBaseImage = null;
     private List<float[]> cvKeypoints = null;
     private boolean cvScanning = false;
+
+    // Webcam state
+    private Process          cvServerProcess = null;
+    private CVSocketClient   cvSocketClient  = null;
+    private JButton          btnStartWebcam  = null;
+    private JButton          btnStopWebcam   = null;
+    private JButton          btnCaptureWebcam = null;
+
     private JPanel cvImagePanel;
 
     // Manual entry form fields
@@ -114,7 +123,7 @@ public class GuardDashboard extends JPanel {
     private JComboBox<UsageType> cbUsage;
     private JComboBox<Replaceability> cbReplace;
 
-    // The student currently loaded in the left panel — null if no student is active
+    // The student currently loaded in the left panel - null if no student is active
     private Student currentStudent;
 
     private final storage.dao.DecisionLogDAO decisionLogDAO = new storage.dao.DecisionLogDAO();
@@ -521,18 +530,43 @@ public class GuardDashboard extends JPanel {
         resultBlock.add(Box.createVerticalStrut(4));
         resultBlock.add(lblCVConfidence);
 
-        JPanel btnRow = new JPanel(new GridLayout(1, 2, 6, 0));
+        JPanel btnRow = new JPanel(new GridLayout(2, 2, 6, 4));
         btnRow.setOpaque(false);
         JButton btnPick = IcarusTheme.makeButton("SELECT IMAGE");
         JButton btnScan = IcarusTheme.makeButton("RUN CV SCAN");
         btnPick.addActionListener(e -> doCVPick());
         btnScan.addActionListener(e -> doCVEvaluate());
+
+        btnStartWebcam   = IcarusTheme.makeButton("START WEBCAM");
+        btnStopWebcam    = IcarusTheme.makeButton("STOP WEBCAM");
+        btnCaptureWebcam = IcarusTheme.makeButton("CAPTURE & SCAN");
+        btnStopWebcam.setEnabled(false);
+        btnCaptureWebcam.setEnabled(false);
+
+        btnStartWebcam.addActionListener(e -> doStartWebcam());
+        btnStopWebcam.addActionListener(e -> doStopWebcam());
+        btnCaptureWebcam.addActionListener(e -> doCaptureAndScan());
+
         btnRow.add(btnPick);
         btnRow.add(btnScan);
+        btnRow.add(btnStartWebcam);
+        btnRow.add(btnStopWebcam);
+
+        // Capture button gets its own full-width row
+        JPanel captureRow = new JPanel(new GridLayout(1, 1));
+        captureRow.setOpaque(false);
+        captureRow.add(btnCaptureWebcam);
+
+        JPanel southBlock = new JPanel();
+        southBlock.setLayout(new BoxLayout(southBlock, BoxLayout.Y_AXIS));
+        southBlock.setOpaque(false);
+        southBlock.add(btnRow);
+        southBlock.add(Box.createVerticalStrut(4));
+        southBlock.add(captureRow);
 
         panel.add(imgHolder, BorderLayout.CENTER);
         panel.add(resultBlock, BorderLayout.NORTH);
-        panel.add(btnRow, BorderLayout.SOUTH);
+        panel.add(southBlock, BorderLayout.SOUTH);
 
         return panel;
     }
@@ -756,7 +790,7 @@ public class GuardDashboard extends JPanel {
     }
 
     // Reads the manual entry form, builds an Item, runs it through the decision engine,
-    // and shows the result. Does not save to the database yet — that happens on LOG DECISION.
+    // and shows the result. Does not save to the database yet - that happens on LOG DECISION.
     private void doManualEvaluate() {
         String name = tfItemName.getText().trim();
         if (name.isBlank()) { showError("Item name required."); return; }
@@ -795,7 +829,7 @@ public class GuardDashboard extends JPanel {
     }
 
     // Opens a file picker for the item image and loads it into the CV panel preview.
-    // Does not run the scan — the guard must press RUN CV SCAN separately.
+    // Does not run the scan - the guard must press RUN CV SCAN separately.
     private void doCVPick() {
         JFileChooser fc = new JFileChooser("assets");
         fc.setFileFilter(new FileNameExtensionFilter("Images", "png", "jpg", "jpeg"));
@@ -914,7 +948,7 @@ public class GuardDashboard extends JPanel {
                             primary = PrimaryCategory.ALCOHOL;
                             secondary = SecondaryCategory.ALCOHOLIC_BEVERAGE;
                         } else {
-                            // Unknown prohibited item — default to weapon for maximum safety
+                            // Unknown prohibited item - default to weapon for maximum safety
                             primary = PrimaryCategory.WEAPON;
                             secondary = SecondaryCategory.SHARP_OBJECT;
                         }
@@ -1269,6 +1303,244 @@ public class GuardDashboard extends JPanel {
 
         dialog.setContentPane(root);
         dialog.setVisible(true);
+    }
+
+    // real time CV type shit
+    // Launches cv_server.py as a subprocess and connects the socket client.
+    private void doStartWebcam() {
+        if (cvServerProcess != null && cvServerProcess.isAlive()) {
+            showError("Webcam already running.");
+            return;
+        }
+
+        try {
+            ProcessBuilder pb = new ProcessBuilder("python", "cv_server.py");
+            pb.directory(new java.io.File("."));
+            pb.redirectErrorStream(true);
+            cvServerProcess = pb.start();
+
+            // Drain the Python process stdout so it doesn't block
+            Thread drain = new Thread(() -> {
+                try (var br = new java.io.BufferedReader(
+                        new java.io.InputStreamReader(cvServerProcess.getInputStream()))) {
+                    String line;
+                    while ((line = br.readLine()) != null)
+                        System.out.println("[cv_server] " + line);
+                } catch (Exception ignored) {}
+            });
+            drain.setDaemon(true);
+            drain.start();
+
+            // Start connection attempt in a background thread to keep UI responsive
+            new Thread(() -> {
+                int maxAttempts = 60; // 60 seconds patience
+                int attempts = 0;
+                boolean connected = false;
+
+                cvSocketClient = new CVSocketClient();
+
+                while (attempts < maxAttempts && !connected) {
+                    try {
+                        // Try to connect
+                        cvSocketClient.connect();
+                        connected = true;
+                    } catch (Exception e) {
+                        attempts++;
+                        // Update status on the UI thread
+                        final int currentSec = attempts;
+                        SwingUtilities.invokeLater(() -> 
+                            frame.setStatus("WAITING FOR WEBCAM... " + currentSec + "s")
+                        );
+                        
+                        try { Thread.sleep(1000); } catch (InterruptedException ignored) {}
+                    }
+                }
+
+                if (connected) {
+                    SwingUtilities.invokeLater(() -> {
+                        btnStartWebcam.setEnabled(false);
+                        btnStopWebcam.setEnabled(true);
+                        btnCaptureWebcam.setEnabled(true);
+                        frame.setStatus("WEBCAM ONLINE");
+                    });
+                } else {
+                    SwingUtilities.invokeLater(() -> {
+                        showError("CV Server failed to start after 1 minute. Check if cv_server.py has errors.");
+                        doStopWebcam();
+                    });
+                }
+            }).start();
+
+        } catch (Exception ex) {
+            showError("Failed to launch process: " + ex.getMessage());
+            doStopWebcam();
+        }
+    }
+
+    // Sends STOP to cv_server.py and cleans up the process.
+    private void doStopWebcam() {
+        if (cvSocketClient != null) {
+            cvSocketClient.disconnect();
+            cvSocketClient = null;
+        }
+        if (cvServerProcess != null) {
+            cvServerProcess.destroyForcibly();
+            cvServerProcess = null;
+        }
+        btnStartWebcam.setEnabled(true);
+        btnStopWebcam.setEnabled(false);
+        btnCaptureWebcam.setEnabled(false);
+        frame.setStatus("WEBCAM OFFLINE");
+    }
+
+    // Tells cv_server.py to grab the current frame, then feeds the saved path
+    // into the existing doCVEvaluate() flow - no changes to CV or decision engine needed.
+    private void doCaptureAndScan() {
+        if (cvSocketClient == null || !cvSocketClient.isConnected()) {
+            showError("Webcam not connected. Press START WEBCAM first.");
+            return;
+        }
+        frame.setStatus("CAPTURING FRAME...");
+        SwingWorker<CVSocketClient.CaptureResult, Void> worker = new SwingWorker<>() {
+            @Override
+            protected CVSocketClient.CaptureResult doInBackground() throws Exception {
+                return cvSocketClient.sendCapture();
+            }
+            @Override
+            protected void done() {
+                try {
+                    CVSocketClient.CaptureResult capture = get();
+                    lastScannedImagePath = capture.imagePath;
+
+                    // Load captured frame into CV preview panel
+                    try {
+                        cvBaseImage = javax.imageio.ImageIO.read(new java.io.File(capture.imagePath));
+                        cvKeypoints = null;
+                        cvLog.clear();
+                        cvScanning = false;
+                        cvImagePanel.repaint();
+                    } catch (Exception ignored) {}
+
+                    if (capture.hasYoloHit()) {
+                        // --- LAYER 1: YOLO hit - map label directly to categories ---
+                        handleYoloResult(capture);
+                    } else {
+                        // --- LAYER 2: YOLO found nothing relevant - fall through to ORB ---
+                        lblCVResult.setText("SCAN RESULT: YOLO NO HIT - RUNNING ORB...");
+                        doCVEvaluate();
+                    }
+
+                } catch (Exception ex) {
+                    showError("Capture failed: " + ex.getMessage());
+                    frame.setStatus("CAPTURE FAILED");
+                }
+            }
+        };
+        worker.execute();
+    }
+
+    // Maps a YOLO label directly to Item categories and runs it through DecisionEngine.
+    // This completely bypasses ORB - no CVEngine.matchImage() call needed.
+    private void handleYoloResult(CVSocketClient.CaptureResult capture) {
+        String label = capture.yoloLabel;   // already lowercased by CVSocketClient
+        float  conf  = capture.yoloConf;
+
+        lblCVResult.setText("SCAN RESULT: YOLO - " + label.toUpperCase());
+        lblCVConfidence.setText(String.format("CONFIDENCE: %.1f%%", conf * 100));
+
+        PrimaryCategory   primary;
+        SecondaryCategory secondary;
+        ItemFunction      function;
+        ConsumptionContext context;
+        UsageType         usage;
+        Replaceability    replace;
+
+        switch (label) {
+            case "knife", "scissors" -> {
+                primary   = PrimaryCategory.WEAPON;
+                secondary = SecondaryCategory.SHARP_OBJECT;
+                function  = ItemFunction.TOOL;
+                context   = ConsumptionContext.UNKNOWN;
+                usage     = UsageType.OTHER;
+                replace   = Replaceability.LOW;
+            }
+            case "bottle" -> {
+                // Water bottle, soda bottle — outside plastic, single use
+                primary   = PrimaryCategory.SINGLE_USE_PLASTIC;
+                secondary = SecondaryCategory.BEVERAGE_CONTAINER;
+                function  = ItemFunction.CONTAINER;
+                context   = ConsumptionContext.BEVERAGE;
+                usage     = UsageType.SINGLE_USE;
+                replace   = Replaceability.HIGH;
+            }
+            case "cup", "wine glass" -> {
+                // Plastic cup brought from outside
+                primary   = PrimaryCategory.SINGLE_USE_PLASTIC;
+                secondary = SecondaryCategory.BEVERAGE_CONTAINER;
+                function  = ItemFunction.CONTAINER;
+                context   = ConsumptionContext.SCHOOL_USE;
+                usage     = UsageType.SINGLE_USE;
+                replace   = Replaceability.HIGH;
+            }
+            case "fork", "spoon" -> {
+                // Plastic utensils — high risk, easily replaceable
+                primary   = PrimaryCategory.SINGLE_USE_PLASTIC;
+                secondary = SecondaryCategory.FOOD_ACCESSORY;
+                function  = ItemFunction.UTENSIL;
+                context   = ConsumptionContext.FOOD;
+                usage     = UsageType.SINGLE_USE;
+                replace   = Replaceability.HIGH;
+            }
+            default -> {
+                // YOLO flagged something in RELEVANT_LABELS but no specific rule
+                // ALLOWED + FOOD_CONTAINER = lowest risk path through DecisionEngine
+                primary   = PrimaryCategory.ALLOWED;
+                secondary = SecondaryCategory.FOOD_CONTAINER;
+                function  = ItemFunction.OTHER;
+                context   = ConsumptionContext.UNKNOWN;
+                usage     = UsageType.OTHER;
+                replace   = Replaceability.LOW;
+            }
+        }
+
+        String studentId = currentStudent != null ? currentStudent.getStudentId() : null;
+
+        try {
+            Item item = new Item(
+                label,              // item name = yolo label
+                null,               // no brand
+                primary, secondary,
+                function, context,
+                usage, replace,
+                ItemStatus.HELD, 1,
+                LocalDateTime.now(), studentId
+            );
+
+            // Build a CVMatchResult so DecisionEngine.evaluateWithCVResult() works correctly
+            // matchLabel drives the canteen product logic in DecisionEngine
+            String matchLabel;
+            if (primary == PrimaryCategory.WEAPON ||
+                primary == PrimaryCategory.TOBACCO ||
+                primary == PrimaryCategory.ALCOHOL) {
+                matchLabel = "REJECTED";
+            } else if (primary == PrimaryCategory.CANTEEN_PRODUCT) {
+                matchLabel = "APPROVED";
+            } else {
+                matchLabel = "NO_MATCH";
+            }
+
+            CVMatchResult cvResult = new CVMatchResult(label, conf, matchLabel);
+
+            DecisionResult result = DecisionEngine.evaluateWithCVResult(item, cvResult);
+            lastEvaluatedItem  = item;
+            lastDecisionResult = result;
+            displayResult(result);
+            frame.setStatus("YOLO SCAN COMPLETE: " + label.toUpperCase()
+                + String.format(" (%.0f%%)", conf * 100));
+
+        } catch (Exception ex) {
+            showError("YOLO evaluation error: " + ex.getMessage());
+        }
     }
 
     // Shows a modal error dialog with the given message

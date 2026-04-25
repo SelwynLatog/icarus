@@ -21,7 +21,7 @@ if ($javaFiles.Count -eq 0) {
 
 Write-Host "`nCompiling $($javaFiles.Count) file(s)..." -ForegroundColor Cyan
 
-javac -d $BIN -cp "$LIB\*" @javaFiles
+javac -d $BIN -sourcepath $SRC -cp "$LIB\*" @javaFiles
 
 if ($LASTEXITCODE -ne 0) {
     Write-Host "`nCompilation failed." -ForegroundColor Red
